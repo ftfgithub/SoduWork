@@ -12,10 +12,11 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import models
+from app import automation_models as am, models
 from app.api import admin, admin_projects
 from app.auth import sign_token
 from app.db import Base, get_session
+from app.services import release_control
 
 for model_file in (Path(__file__).parent / "app").glob("*models.py"):
     importlib.import_module("app." + model_file.stem)
@@ -94,6 +95,25 @@ class AdminProjectRouterTests(unittest.IsolatedAsyncioTestCase):
         headers = {"Authorization": "Bearer " + sign_token(who, 1)} if who else {}
         return await self.http.request(method, "/api/v1/admin" + path, headers=headers, **kwargs)
 
+    async def _open_merge_approval(self, second_approver):
+        async with self.sessions() as session:
+            task = models.Task(id="merge-task", title="Release task", project_id="project")
+            artifact = am.ArtifactVersion(task_id=task.id, kind="code", checksum="merge-fixture")
+            session.add_all([task, artifact, am.ApprovalPolicy(
+                id=release_control.POLICY_MERGE, key="merge", name="Two-person merge",
+                rules={"required": 2, "approvers": [
+                    {"type": "project_owner"}, {"type": "user", "id": second_approver},
+                ]},
+            )])
+            await session.flush()
+            request = await release_control.ensure_request(session, task, artifact, "merge")
+            await session.commit()
+            return request.id
+
+    async def _assigned_users(self, session, request_id):
+        return set((await session.scalars(select(am.ApprovalAssignment.user_id).where(
+            am.ApprovalAssignment.request_id == request_id))).all())
+
     async def test_legacy_exports_route_order_and_metadata(self):
         expected = [name for _, _, name in PROJECT_ROUTES]
         names = list(route_names(admin.router.routes))
@@ -137,6 +157,53 @@ class AdminProjectRouterTests(unittest.IsolatedAsyncioTestCase):
             audit = (await session.execute(select(models.AuditLog).where(
                 models.AuditLog.action == "project.create"))).scalars().one()
             self.assertEqual((audit.actor_id, audit.target_id), ("manager", project.id))
+
+    async def test_owner_change_rejects_a_reroute_that_cannot_reach_quorum(self):
+        request_id = await self._open_merge_approval("reader")
+
+        response = await self.request("PUT", "/projects/project",
+                                      json={"ownerUserId": "reader", "name": "Renamed"})
+
+        self.assertEqual(response.status_code, 409, response.text)
+        detail = response.json()["detail"]
+        self.assertIn("需要 2 人", detail)
+        self.assertIn("只能分配给 1 人", detail)
+        async with self.sessions() as session:
+            project = await session.get(models.Project, "project")
+            self.assertEqual((project.owner_user_id, project.name), ("owner", "Project"))
+            request = await session.get(am.ApprovalRequest, request_id)
+            self.assertEqual((request.status, request.required_count), ("pending", 2))
+            self.assertEqual(await self._assigned_users(session, request_id), {"owner", "reader"})
+            self.assertIsNone(await session.scalar(select(models.TaskEvent.id).where(
+                models.TaskEvent.kind == "release.approval_rerouted")))
+            self.assertIsNone(await session.scalar(select(models.AuditLog.id).where(
+                models.AuditLog.action == "project.update")))
+
+    async def test_owner_change_reroutes_when_two_distinct_approvers_remain(self):
+        request_id = await self._open_merge_approval("manager")
+
+        response = await self.request("PUT", "/projects/project", json={"ownerUserId": "reader"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["ownerUserId"], "reader")
+        self.assertEqual(response.json()["pendingRerouted"],
+                         {"requests": 1, "assignments": 2, "skipped": 0})
+        async with self.sessions() as session:
+            self.assertEqual(await self._assigned_users(session, request_id), {"reader", "manager"})
+
+    async def test_owner_change_keeps_assignments_for_partially_decided_approvals(self):
+        request_id = await self._open_merge_approval("reader")
+        async with self.sessions() as session:
+            session.add(am.ApprovalDecision(request_id=request_id, user_id="owner", decision="approve"))
+            await session.commit()
+
+        response = await self.request("PUT", "/projects/project", json={"ownerUserId": "reader"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["pendingRerouted"],
+                         {"requests": 0, "assignments": 0, "skipped": 1})
+        async with self.sessions() as session:
+            self.assertEqual(await self._assigned_users(session, request_id), {"owner", "reader"})
 
     async def test_shared_scope_helpers_remain_patchable_through_admin(self):
         denied = AsyncMock(side_effect=HTTPException(403, "scope denied"))

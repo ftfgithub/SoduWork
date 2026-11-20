@@ -161,8 +161,12 @@ async def update_project(pid: str, body: dict = Body(default_factory=dict),
     rerouted = {"requests": 0, "assignments": 0, "skipped": 0}
     if owner is not None and owner.id != old_owner:
         from ..services import approval_routing
-        rerouted = await approval_routing.reroute_pending_for_project(
-            session, p.id, user.display_name or user.username)
+        try:
+            rerouted = await approval_routing.reroute_pending_for_project(
+                session, p.id, user.display_name or user.username)
+        except approval_routing.ApprovalRerouteConflict as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     await session.commit()
     await session.refresh(p)
     await audit.log(session, user, "project.update", "project", p.id, p.name,
