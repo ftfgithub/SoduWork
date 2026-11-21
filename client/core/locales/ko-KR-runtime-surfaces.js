@@ -1,5 +1,15 @@
 (function (global) {
   const messages = {
+    "hub.input.pages": "limit/offset 또는 page/pageSize 중 한 가지 페이지 지정 방식만 사용하세요.",
+    "hub.input.inbox": "팀 수신함에 넣을 작업에는 수신자를 지정할 수 없습니다. 개인에게 보내려면 팀원에게 할당하세요.",
+    "hub.input.tier": "지원하지 않는 환경 등급입니다.",
+    "hub.input.host_type": "호스트 이름은 문자열이어야 합니다.",
+    "hub.input.host_required": "이 Runner를 식별할 호스트 이름을 입력하세요.",
+    "hub.input.comment_type": "댓글 본문은 문자열이어야 합니다.",
+    "hub.input.comment_length": "댓글은 4,000자 이내로 입력하세요.",
+    "hub.input.due": "마감 시간은 밀리초 단위 타임스탬프로 입력하세요.",
+    "hub.input.minimum": "{field} 값은 {bound} 이상이어야 합니다.",
+    "hub.input.maximum": "{field} 값은 {bound} 이하여야 합니다.",
     "你已停止": "중지했습니다",
     "你在 {seconds} 秒后停止了": "{seconds}초 후 중지했습니다",
     "你在 {minutes} 分 {seconds} 秒后停止了": "{minutes}분 {seconds}초 후 중지했습니다",

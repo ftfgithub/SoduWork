@@ -37,9 +37,20 @@ async function responseData(res) {
   }
 }
 
+function validationMessage(item) {
+  const fallback = item?.msg || item?.message || String(item || '')
+  if (item?.type === 'hub.input.due') return serverMessage({ key: 'hub.input.due' }, fallback)
+  const [source, field] = Array.isArray(item?.loc) ? item.loc : []
+  if (source !== 'query' || !['limit', 'offset', 'page', 'pageSize', 'days'].includes(field)) return fallback
+  const lower = item.type === 'greater_than_equal'
+  const bound = lower ? item.ctx?.ge : item.ctx?.le
+  if ((!lower && item.type !== 'less_than_equal') || !Number.isFinite(bound)) return fallback
+  return serverMessage({ key: lower ? 'hub.input.minimum' : 'hub.input.maximum', params: { field, bound } }, fallback)
+}
+
 function responseError(res, data) {
   let detail = data && typeof data === 'object' ? data.detail : ''
-  if (Array.isArray(detail)) detail = detail.map((item) => item && item.msg || String(item || '')).filter(Boolean).join('；')
+  if (Array.isArray(detail)) detail = detail.map(validationMessage).filter(Boolean).join('；')
   else if (detail && typeof detail === 'object') detail = detail.message || ''
   if (typeof detail !== 'string' || /^\s*</.test(detail)) detail = ''
   const code = res.headers.get('X-Error-Code') || ''

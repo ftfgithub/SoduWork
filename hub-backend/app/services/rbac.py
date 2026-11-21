@@ -7,6 +7,7 @@ from sqlalchemy import String, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models
+from ..pagination import Page, list_result, select_rows
 from ..auth import hash_password
 from ..config import get_settings
 from ..permissions import ALL_KEYS, valid_keys
@@ -213,12 +214,12 @@ async def _available_org_name(session: AsyncSession, name: str, parent_id: str |
     return name
 
 
-async def list_orgs(session: AsyncSession, scope: set[str] | None) -> list[dict]:
-    q = select(models.OrgUnit).order_by(models.OrgUnit.sort, models.OrgUnit.created_at)
+async def list_orgs(session: AsyncSession, scope: set[str] | None, *, page: Page | None = None):
+    q = select(models.OrgUnit).order_by(models.OrgUnit.sort, models.OrgUnit.created_at, models.OrgUnit.id)
     if scope is not None:
         q = q.where(models.OrgUnit.id.in_(scope or {"__none__"}))
-    res = await session.execute(q)
-    return [org_to_api(o) for o in res.scalars().all()]
+    rows, total = await select_rows(session, q, page)
+    return list_result([org_to_api(o) for o in rows], total)
 
 
 async def create_org(
@@ -294,9 +295,10 @@ async def delete_org(
 
 # Roles.
 
-async def list_roles(session: AsyncSession) -> list[dict]:
-    res = await session.execute(select(models.Role).order_by(models.Role.created_at))
-    return [role_to_api(r) for r in res.scalars().all()]
+async def list_roles(session: AsyncSession, *, page: Page | None = None):
+    q = select(models.Role).order_by(models.Role.created_at, models.Role.id)
+    rows, total = await select_rows(session, q, page)
+    return list_result([role_to_api(r) for r in rows], total)
 
 
 async def create_role(session: AsyncSession, name: str, permissions: list[str]) -> dict:
@@ -344,15 +346,15 @@ async def delete_role(session: AsyncSession, rid: str) -> dict:
 
 # Users.
 
-async def list_users(session: AsyncSession, scope: set[str] | None) -> list[dict]:
-    q = select(models.User).order_by(models.User.created_at)
+async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Page | None = None):
+    q = select(models.User).order_by(models.User.created_at, models.User.id)
     if scope is not None:
         q = q.where(models.User.org_id.in_(scope or {"__none__"}))
-    res = await session.execute(q)
-    users = list(res.scalars().all())
+    users, total = await select_rows(session, q, page)
     from . import client_access
     quotas = await client_access.user_quotas(session, [u.id for u in users])
-    return [user_to_api(u, token_quota=quotas.get(u.id, {"mode": "inherit", "limit": 0})) for u in users]
+    items = [user_to_api(u, token_quota=quotas.get(u.id, {"mode": "inherit", "limit": 0})) for u in users]
+    return list_result(items, total)
 
 
 async def get_user_by_username(session: AsyncSession, username: str) -> models.User | None:
@@ -500,10 +502,10 @@ async def seed_domains(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def list_domains(session: AsyncSession) -> list[dict]:
-    res = await session.execute(select(models.Domain).order_by(
-        models.Domain.sort, models.Domain.created_at, models.Domain.id))
-    return [domain_to_api(d) for d in res.scalars().all()]
+async def list_domains(session: AsyncSession, *, page: Page | None = None):
+    q = select(models.Domain).order_by(models.Domain.sort, models.Domain.created_at, models.Domain.id)
+    rows, total = await select_rows(session, q, page)
+    return list_result([domain_to_api(d) for d in rows], total)
 
 
 async def create_domain(session: AsyncSession, name: str, sort: int = 0) -> dict:

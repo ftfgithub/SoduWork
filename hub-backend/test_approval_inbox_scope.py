@@ -258,6 +258,10 @@ class ApprovalInboxScopeTests(unittest.IsolatedAsyncioTestCase):
         limited = await self.inbox(query="?limit=1000")
         self.assertEqual(len(limited["items"]), 100)
         self.assertEqual(limited["pendingTasks"], normal["pendingTasks"])
+        tail = await self.inbox(query="?limit=10&offset=100")
+        self.assertEqual([row["id"] for row in tail["items"]],
+                         [f"request-paged-{i}" for i in range(100, 105)])
+        self.assertEqual(tail["pendingTasks"], normal["pendingTasks"])
         history = await self.inbox(query="?view=done&limit=1")
         self.assertEqual(history["items"], [])
         self.assertEqual(history["pendingTasks"], normal["pendingTasks"])

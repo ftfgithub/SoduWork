@@ -199,3 +199,24 @@ test('department and role deletion errors use the selected locale and preserve u
   f.respond(400, { detail: 'Diagnostic from a newer Hub' }, { 'X-Error-Code': 'future.unknown' })
   await assert.rejects(f.api.deleteOrg('fixture'), { message: 'Diagnostic from a newer Hub' })
 })
+
+test('Hub input errors use each selected language and preserve unknown validation details', async t => {
+  const f = await fixture(t)
+  const previous = getLocale()
+  t.after(() => setLocale(previous))
+  for (const [locale, hostname, minimum] of [
+    ['zh-CN', '主机名必须是字符串', 'days 不能小于 1'],
+    ['en-US', 'The hostname must be text.', 'days must be at least 1.'],
+    ['ja-JP', 'ホスト名を文字列で指定してください。', 'days には 1 以上の値を指定してください。'],
+    ['ko-KR', '호스트 이름은 문자열이어야 합니다.', 'days 값은 1 이상이어야 합니다.'],
+  ]) {
+    setLocale(locale)
+    f.respond(422, { detail: 'fixture' }, { 'X-Error-Code': 'hub.input.host_type' })
+    await assert.rejects(f.api.me(), { message: hostname })
+    f.respond(422, { detail: [
+      { type: 'greater_than_equal', loc: ['query', 'days'], ctx: { ge: 1 }, msg: 'out of range' },
+      { type: 'other', msg: 'original diagnostic' },
+    ] })
+    await assert.rejects(f.api.me(), { message: minimum + '；original diagnostic' })
+  }
+})

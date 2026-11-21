@@ -2,7 +2,9 @@
 from __future__ import annotations
 import uuid
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from typing import Annotated
+
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,13 +69,14 @@ async def _item(session: AsyncSession, request: am.ApprovalRequest,
 
 
 @router.get("")
-async def inbox(view: str = "pending", limit: int = 60,
+async def inbox(view: str = "pending", limit: Annotated[int, Query(ge=1)] = 60,
                 client: Client = Depends(current_client),
-                session: AsyncSession = Depends(get_session)):
+                session: AsyncSession = Depends(get_session),
+                offset: Annotated[int, Query(ge=0, le=2**63-1)] = 0):
     """Return this user's pending queue or their own immutable decision history."""
     user = await _actor(session, client)
     view = "done" if str(view).lower() == "done" else "pending"
-    limit = min(100, max(1, int(limit or 60)))
+    limit = min(100, limit)
     request_ids = set((await session.execute(select(am.ApprovalAssignment.request_id).where(
         am.ApprovalAssignment.user_id == user.id
     ))).scalars().all())
@@ -108,12 +111,12 @@ async def inbox(view: str = "pending", limit: int = 60,
             .join(am.ApprovalDecision,
                   am.ApprovalDecision.request_id == am.ApprovalRequest.id)
             .where(am.ApprovalDecision.user_id == user.id)
-            .order_by(am.ApprovalDecision.created_at.desc())
-            .limit(limit)
+            .order_by(am.ApprovalDecision.created_at.desc(), am.ApprovalDecision.id)
+            .offset(offset).limit(limit)
         )).all())
     my_decisions = {request.id: decision for request, decision in done_pairs}
     rows = ([request for request, _ in done_pairs]
-            if view == "done" else pending[:limit])
+            if view == "done" else pending[offset:offset + limit])
     task_ids = {row.task_id for row in rows}
     artifact_ids = {row.artifact_version_id for row in rows}
     tasks = {row.id: row for row in (await session.execute(select(Task).where(

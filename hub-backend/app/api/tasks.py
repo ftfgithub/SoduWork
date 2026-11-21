@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..pagination import PageQuery
 from ..db import get_session
 from ..deps import current_ai_client, authenticated_client, current_client, enforce_client_access, enforce_client_quota
 from ..models import Client, Task, User
@@ -104,8 +105,9 @@ router.include_router(personal_schedule_router)
 
 
 @router.get("/tasks")
-async def get_tasks(client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)):
-    return await svc.list_tasks(session, client.id, include_related=True)
+async def get_tasks(client: Client = Depends(current_client), session: AsyncSession = Depends(get_session),
+                    window: PageQuery = None):
+    return await svc.list_tasks(session, client.id, include_related=True, page=window)
 
 
 @router.post("/tasks")
@@ -2037,7 +2039,11 @@ async def add_task_comment(
 ):
     """Post a comment and notify mentioned colleagues; body contains body and mentions entries."""
     t = await _view_task(session, client, tid)
-    text = (body.get("body") or "").strip()
+    raw = body.get("body")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(status_code=422, detail="评论正文必须是文本",
+                            headers={"X-Error-Code": "hub.input.comment_type"})
+    text = (raw or "").strip()
     mentions = body.get("mentions") or []
     if not text:
         raise HTTPException(status_code=400, detail="评论不能为空")

@@ -580,20 +580,38 @@
     return h;
   }
 
+  function hubInputMessage(key, fallback, params) {
+    const i18n = global.SoduWorkI18n;
+    if (!i18n || !Object.hasOwn(global.SoduWorkLocaleMessages?.[i18n.getLocale()] || {}, key)) return fallback;
+    return i18n.t(key, fallback, params);
+  }
+
+  function validationMessage(item) {
+    const fallback = item?.msg || item?.message || String(item || '');
+    if (item?.type === 'hub.input.due') return hubInputMessage('hub.input.due', fallback);
+    const [source, field] = Array.isArray(item?.loc) ? item.loc : [];
+    if (source !== 'query' || !['limit', 'offset', 'page', 'pageSize', 'days'].includes(field)) return fallback;
+    const lower = item.type === 'greater_than_equal';
+    const bound = lower ? item.ctx?.ge : item.ctx?.le;
+    if ((!lower && item.type !== 'less_than_equal') || !Number.isFinite(bound)) return fallback;
+    return hubInputMessage(lower ? 'hub.input.minimum' : 'hub.input.maximum', fallback, { field, bound });
+  }
+
   function httpError(res, text) {
     var data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
     var detail = data && data.detail;
     var meta = detail && !Array.isArray(detail) && typeof detail === 'object' ? detail : null;
-    if (Array.isArray(detail)) detail = detail.map(function (item) {
-      return item && (item.msg || item.message) || String(item || '');
-    }).filter(Boolean).join('；');
+    if (Array.isArray(detail)) detail = detail.map(validationMessage).filter(Boolean).join('；');
     else if (detail && typeof detail === 'object') detail = detail.message || detail.msg || '';
     detail = String(detail || '').trim().slice(0, 500);
-    var error = new Error(detail || ('HTTP ' + res.status));
+    var inputCode = res.headers?.get?.('X-Error-Code') || '';
+    if (!inputCode.startsWith('hub.input.')) inputCode = '';
+    var message = inputCode ? hubInputMessage(inputCode, detail) : detail;
+    var error = new Error(message || ('HTTP ' + res.status));
     error.status = Number(res.status) || 0;
     error.detail = detail;
-    error.code = String(meta && meta.code || '');
+    error.code = String(meta && meta.code || inputCode);
     error.phase = String(meta && meta.phase || '');
     error.phaseName = String(meta && meta.phaseName || '');
     error.retryable = meta && typeof meta.retryable === 'boolean' ? meta.retryable : null;
@@ -1391,9 +1409,8 @@
       var res = await hubFetch(apiUrl('/team/tasks'),
         { method: 'POST', headers: authHeaders(true), body: JSON.stringify(body || {}), signal: _abortSignal(DEFAULT_TIMEOUT) });
       var txt = await res.text();
-      var data = parseJSON(txt);
-      if (!res.ok) { markFromError(new Error('HTTP ' + res.status)); throw new Error((data && data.detail) || ('HTTP ' + res.status)); }
-      mark(true); return data;
+      if (!res.ok) { markFromError(new Error('HTTP ' + res.status)); throw httpError(res, txt); }
+      mark(true); return parseJSON(txt);
     },
 
     /* Atomic coworker assignment: create on the recipient device, never create locally then hand off. */
@@ -1453,9 +1470,9 @@
     async addTaskComment(tid, body, mentions) {
       var res = await hubFetch(apiUrl('/tasks/' + encodeURIComponent(tid) + '/comments'),
         { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ body: body, mentions: mentions || [] }), signal: _abortSignal(DEFAULT_TIMEOUT) });
-      var txt = await res.text(); var data = parseJSON(txt);
-      if (!res.ok) { markFromError(new Error('HTTP ' + res.status)); throw new Error((data && data.detail) || ('HTTP ' + res.status)); }
-      mark(true); return data;
+      var txt = await res.text();
+      if (!res.ok) { markFromError(new Error('HTTP ' + res.status)); throw httpError(res, txt); }
+      mark(true); return parseJSON(txt);
     },
 
     /* Derive task fields from instructions and materials. Preserve input for manual editing when the API rejects or fails. */

@@ -322,6 +322,10 @@ async def preflight_chain(session: AsyncSession, repo: models.Repo,
             "stages": stages, "blockers": blockers, "warnings": warnings}
 
 
+class InvalidEnvironmentTier(ValueError):
+    """The requested deployment tier is outside the catalog."""
+
+
 async def save_environment(session: AsyncSession, body: dict, row: am.Environment | None = None
                            ) -> am.Environment:
     creating = row is None
@@ -331,7 +335,7 @@ async def save_environment(session: AsyncSession, body: dict, row: am.Environmen
                     "customer-staging", "prod", "production", "customer-production",
                     "custom", "regulated"} and not (
                         not creating and row is not None and row.tier == tier):
-        raise ValueError("环境层级不受支持")
+        raise InvalidEnvironmentTier("环境层级不受支持")
     if creating:
         if not _KEY.fullmatch(key):
             raise ValueError("环境标识只允许小写字母、数字和短横线，且以字母开头")

@@ -370,14 +370,22 @@ async def admin_runner_enroll(request: Request, body: dict = Body(default_factor
     its key and invalidates the old key immediately.
     """
     rid = str(body.get("runnerId") or "").strip()
+    host = body.get("host", "")
+    if not isinstance(host, str):
+        raise HTTPException(status_code=422, detail="主机名必须是字符串",
+                            headers={"X-Error-Code": "hub.input.host_type"})
+    host = host.strip()
     row = await session.get(am.RunnerNode, rid) if rid else None
+    if row is None and not host:
+        raise HTTPException(status_code=422, detail="请填写主机名，否则无法识别这台执行节点",
+                            headers={"X-Error-Code": "hub.input.host_required"})
     if row is not None:
         row = await _admin_runner(session, user, rid, lock=True)
         require_generic_admin_mutation(row)
     org_id = await _assigned_org(session, user, str(body.get("orgId") or ""), row)
     try:
         out = await runner_enroll.enroll(
-            session, runner_id=rid, host=str(body.get("host") or ""),
+            session, runner_id=rid, host=host,
             tags=body.get("tags") or [], hub=str(body.get("hub") or ""),
             request_base=str(request.base_url).rstrip("/"),
             work_root=str(body.get("workRoot") or ""), org_id=org_id)

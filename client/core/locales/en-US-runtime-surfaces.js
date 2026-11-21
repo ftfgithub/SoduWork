@@ -1,5 +1,15 @@
 (function (global) {
   const messages = {
+    "hub.input.pages": "Choose one pagination mode: limit/offset or page/pageSize.",
+    "hub.input.inbox": "Team inbox tasks have no recipient. To send a task to someone, assign it to a member.",
+    "hub.input.tier": "This environment tier is not supported.",
+    "hub.input.host_type": "The hostname must be text.",
+    "hub.input.host_required": "Enter a hostname to identify this Runner.",
+    "hub.input.comment_type": "Comment text must be a string.",
+    "hub.input.comment_length": "Comments can contain up to 4,000 characters.",
+    "hub.input.due": "A deadline must be a timestamp in milliseconds.",
+    "hub.input.minimum": "{field} must be at least {bound}.",
+    "hub.input.maximum": "{field} must be at most {bound}.",
     "model.detail.请求的最大输出 Token 超过模型服务限制；请在模型配置中调整“最大输出 Token”，并核对“上下文窗口”": "The requested output budget exceeds the model service limit. Adjust “Maximum output tokens” in model settings and check “Context window”.",
     "留空时使用 16384 Token。请按服务实际限制填写；能力检测不验证最大输出上限。": "When blank, 16384 tokens are used. Set this to your provider’s actual limit; capability tests do not verify the maximum output limit.",
     "原设备凭据无法验证": "The original device credentials could not be verified.",

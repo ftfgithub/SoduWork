@@ -2,6 +2,7 @@
 device management. Superusers see all records; other users see their department subtree and
 unassigned devices. Client.user_ref determines device ownership.
 """
+from typing import Annotated
 from datetime import date as calendar_date, datetime, timedelta, timezone
 import logging
 import uuid
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import models
 from ..auth import sign_token, verify_password
 from ..config import get_settings
+from ..pagination import PageQuery
 from ..db import get_session
 from ..deps import current_user, has_perm, require_perm
 from ..models import Attachment, Client, Role, Task, TaskEvent, User
@@ -155,8 +157,9 @@ def _org_mutation_error(exc: rbac.OrgMutationError) -> HTTPException:
 # Organizational structure.
 
 @router.get("/orgs")
-async def list_orgs(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
-    return await rbac.list_orgs(session, await rbac.scope_org_ids(session, user))
+async def list_orgs(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
+                    window: PageQuery = None):
+    return await rbac.list_orgs(session, await rbac.scope_org_ids(session, user), page=window)
 
 
 @router.post("/orgs")
@@ -217,8 +220,9 @@ async def delete_org(
 # Roles.
 
 @router.get("/roles")
-async def list_roles(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
-    return await rbac.list_roles(session)
+async def list_roles(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
+                    window: PageQuery = None):
+    return await rbac.list_roles(session, page=window)
 
 
 @router.post("/roles")
@@ -268,8 +272,9 @@ async def delete_role(rid: str,
 # Users within the current scope.
 
 @router.get("/users", dependencies=[Depends(require_perm("user.manage"))])
-async def list_users(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
-    return await rbac.list_users(session, await rbac.scope_org_ids(session, user))
+async def list_users(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
+                    window: PageQuery = None):
+    return await rbac.list_users(session, await rbac.scope_org_ids(session, user), page=window)
 
 
 @router.post("/users")
@@ -442,8 +447,9 @@ async def delete_position(
 # Responsibility catalog: readable by authenticated users; mutations require user.manage.
 
 @router.get("/domains")
-async def list_domains(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
-    return await rbac.list_domains(session)
+async def list_domains(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
+                    window: PageQuery = None):
+    return await rbac.list_domains(session, page=window)
 
 
 @router.post("/domains")
@@ -495,25 +501,55 @@ async def delete_domain(
 
 # Scoped device fleet and SoduWork ownership.
 
+class ClientListFilters:
+    def __init__(self, q: str = Query(default="", max_length=120),
+                 state: str = Query(default="all", pattern="^(all|online|offline|pending)$"),
+                 form: str = Query(default="all", pattern="^(all|desktop|mobile)$")):
+        self.q = q
+        self.state = state
+        self.form = form
+
+
+ClientFilters = Annotated[ClientListFilters, Depends()]
+ClientPageNumber = Annotated[int | None, Query(ge=1, le=2**31-1)]
+ClientPageSize = Annotated[int | None, Query(alias="pageSize", ge=1, le=100)]
+
+
 @router.get("/clients")
 async def list_clients(
-    paged: bool = Query(default=False),
-    q: str = Query(default="", max_length=120),
-    state: str = Query(default="all", pattern="^(all|online|offline|pending)$"),
-    form: str = Query(default="all", pattern="^(all|desktop|mobile)$"),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, alias="pageSize", ge=10, le=100),
+    filters: ClientFilters, paged: bool = Query(default=False),
+    page: ClientPageNumber = None, page_size: ClientPageSize = None, window: PageQuery = None,
     user: User = Depends(require_perm("client.view")),
     session: AsyncSession = Depends(get_session),
 ):
+    """Legacy unpaged clients receive an array. Use /client-inventory for a stable envelope."""
+    if paged or window:
+        return await paged_clients(filters, page, page_size, window, user, session)
     vis = await _visible_client_ids(session, user)
-    if not paged:
-        res = await session.execute(select(Client).order_by(Client.created_at.desc()))
-        return [
-            client_to_api(c, settings.offline_after_seconds)
-            for c in res.scalars().all()
-            if vis is None or c.id in vis
-        ]
+    query = select(Client).order_by(Client.created_at.desc(), Client.id)
+    if vis is not None:
+        query = query.where(Client.id.in_(vis))
+    return [client_to_api(c, settings.offline_after_seconds) for c in await session.scalars(query)]
+
+
+@router.get("/client-inventory")
+async def paged_clients(
+    filters: ClientFilters, page: ClientPageNumber = None, page_size: ClientPageSize = None,
+    window: PageQuery = None, user: User = Depends(require_perm("client.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return items, total and counts for every request, including an empty page."""
+    vis = await _visible_client_ids(session, user)
+    if window:
+        if page is not None or page_size is not None:
+            raise HTTPException(status_code=422, detail="请选择一种分页方式：limit/offset 或 page/pageSize",
+                                headers={"X-Error-Code": "hub.input.pages"})
+        offset, page_size = window.offset, window.limit
+        page = offset // page_size + 1
+    else:
+        page, page_size = page or 1, page_size or 25
+        offset = (page - 1) * page_size
+    state, form, q = filters.state, filters.form, filters.q
 
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.offline_after_seconds)
     scope = [] if vis is None else [Client.id.in_(vis)]
@@ -561,9 +597,9 @@ async def list_clients(
         .where(*scope, *state_where, *form_where, *search)
         .order_by(
             case((Client.last_seen_at >= cutoff, 1), else_=0).desc(),
-            Client.created_at.desc(),
+            Client.created_at.desc(), Client.id,
         )
-        .offset((page - 1) * page_size).limit(page_size)
+        .offset(offset).limit(page_size)
     )
     rows = await session.execute(query)
     items = []
@@ -572,7 +608,7 @@ async def list_clients(
         item["ownerName"] = display_name or username or ""
         items.append(item)
     return {
-        "items": items, "total": total, "page": page, "pageSize": page_size,
+        "items": items, "total": total, "page": page, "pageSize": page_size, "offset": offset,
         "counts": {
             "all": all_count, "online": online_count,
             "offline": all_count - online_count, "pending": pending_count,

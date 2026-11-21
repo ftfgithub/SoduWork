@@ -298,7 +298,7 @@ def read_stamp(path: Path) -> str:
 
 def verify_runner_environment(python: Path, backend: Path, log: Path, *, env: dict) -> None:
     """Check imports and the control-channel API without starting a Runner."""
-    probe = ("import inspect, sys, websockets, yaml, pg8000, pymysql, pymongo, dns, redis, cryptography\n"
+    probe = ("import inspect, sys, websockets, yaml, pg8000, pymysql, pymongo, dns, redis, cryptography, truststore\n"
              "assert sys.version_info >= (3, 12), 'Runner requires Python 3.12+'\n"
              "assert {'additional_headers', 'proxy'} <= set(inspect.signature(websockets.connect).parameters), "
              "'Runner requires the websockets 15+ connection API'\n")
@@ -393,8 +393,10 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
 
     venv = state / "venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    # Keep the caller's module paths out of pip and its build subprocesses.
+    python_env = {key: value for key, value in cache_env.items() if key not in ("PYTHONHOME", "PYTHONPATH")}
     if not python.is_file():
-        run([sys.executable, "-m", "venv", str(venv)], cwd=state, log=log, env=cache_env,
+        run([sys.executable, "-I", "-m", "venv", str(venv)], cwd=state, log=log, env=python_env,
             label="[1/4] 创建独立环境 / Creating a private Python environment")
         if not python.is_file():
             raise venv_interpreter_error(python, venv, log)
@@ -404,7 +406,7 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
     install = read_stamp(py_stamp) != wanted
     if not install:
         try:
-            verify_runner_environment(python, backend, log, env=cache_env)
+            verify_runner_environment(python, backend, log, env=python_env)
         except DiskFullError:
             raise
         except StartupError:
@@ -412,11 +414,11 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
             # launcher's environment, never a checkout or activated shell venv.
             install = True
     if install:
-        run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        run([str(python), "-I", "-m", "pip", "install", "--disable-pip-version-check",
              *[argument for file in requirements for argument in ("-r", str(file))]], cwd=state, log=log,
-            env=cache_env,
+            env=python_env,
             label="[2/4] 安装服务依赖 / Installing server dependencies (first run needs internet)")
-        verify_runner_environment(python, backend, log, env=cache_env)
+        verify_runner_environment(python, backend, log, env=python_env)
         py_stamp.write_text(wanted, encoding="utf-8")
 
     source = ROOT / "hub-frontend"

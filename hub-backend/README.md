@@ -352,6 +352,14 @@ Account conversation directory and source projections include `contentLocation`:
 
 See [OAuth deployment and validation](CONNECTOR_OAUTH.en.md) for connector credentials and authorization.
 
+### Listing records
+
+Under `/api/v1`, `admin/users`, `admin/orgs`, `admin/roles`, `admin/domains`, `tasks` and `schedules` return their existing arrays when called without pagination. Supply `limit` (1–200) or `offset` (zero-based) to receive `{items, total}`. With only an offset, the page size defaults to 50. The total counts visible records before pagination. An offset past the end returns an empty page.
+
+Use `GET /api/v1/admin/client-inventory` for an object containing `items`, `total`, `counts`, `page`, `pageSize` and `offset` on every call. Choose `page` and `pageSize` (1–100, default 25), or `offset` and `limit`. Existing callers of `admin/clients` can still request the legacy array or use `paged=1` for an object.
+
+The library uses the same optional limit and offset across folders first, then files. Its existing `folders` and `items` arrays remain separate, and the paginated response includes their combined `total`. Approvals and deliveries accept a positive limit and a zero-based offset.
+
 ## Requirement migration and access
 
 Task APIs retain their public contract. `requirementContent` contains requirement text; execution `title/note` can contain private context. Updates carry `requirementVersion` and write only authorized projections. `canEditRequirement` and `canViewExecution` are separate capabilities.

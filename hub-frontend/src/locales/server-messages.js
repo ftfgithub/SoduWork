@@ -1,5 +1,15 @@
 // Only reviewed server message keys are translated; parameters remain business data.
 export const serverMessages = {
+  'hub.input.pages': ["请选择一种分页方式：limit/offset 或 page/pageSize", "Choose one pagination mode: limit/offset or page/pageSize.", "ページ指定には limit/offset または page/pageSize のどちらかを使用してください。", "limit/offset 또는 page/pageSize 중 한 가지 페이지 지정 방식만 사용하세요."],
+  'hub.input.inbox': ["团队收件箱任务不指定接收人；要交给个人，请使用成员指派", "Team inbox tasks have no recipient. To send a task to someone, assign it to a member.", "チームの受信箱に入れるタスクには宛先を指定できません。個人に送る場合はメンバーに割り当ててください。", "팀 수신함에 넣을 작업에는 수신자를 지정할 수 없습니다. 개인에게 보내려면 팀원에게 할당하세요."],
+  'hub.input.tier': ["环境层级不受支持", "This environment tier is not supported.", "この環境レベルには対応していません。", "지원하지 않는 환경 등급입니다."],
+  'hub.input.host_type': ["主机名必须是字符串", "The hostname must be text.", "ホスト名を文字列で指定してください。", "호스트 이름은 문자열이어야 합니다."],
+  'hub.input.host_required': ["请填写主机名，否则无法识别这台执行节点", "Enter a hostname to identify this Runner.", "この Runner を識別するためにホスト名を入力してください。", "이 Runner를 식별할 호스트 이름을 입력하세요."],
+  'hub.input.comment_type': ["评论正文必须是文本", "Comment text must be a string.", "コメントの本文を文字列で指定してください。", "댓글 본문은 문자열이어야 합니다."],
+  'hub.input.comment_length': ["评论正文不能超过 4000 字", "Comments can contain up to 4,000 characters.", "コメントは4,000文字以内で入力してください。", "댓글은 4,000자 이내로 입력하세요."],
+  'hub.input.due': ["截止时间必须是毫秒时间戳", "A deadline must be a timestamp in milliseconds.", "期限はミリ秒単位のタイムスタンプで指定してください。", "마감 시간은 밀리초 단위 타임스탬프로 입력하세요."],
+  'hub.input.minimum': ["{field} 不能小于 {bound}", "{field} must be at least {bound}.", "{field} には {bound} 以上の値を指定してください。", "{field} 값은 {bound} 이상이어야 합니다."],
+  'hub.input.maximum': ["{field} 不能大于 {bound}", "{field} must be at most {bound}.", "{field} には {bound} 以下の値を指定してください。", "{field} 값은 {bound} 이하여야 합니다."],
   'org.delete.has_children': ['该部门下还有子部门', 'This department still has subdepartments.', 'この部門には子部門が残っています。', '이 부서에 하위 부서가 남아 있습니다.'],
   'org.delete.has_users': ['该部门下还有用户', 'This department still has users.', 'この部門にはユーザーが所属しています。', '이 부서에 소속된 사용자가 있습니다.'],
   'org.delete.not_found': ['部门不存在', 'Department not found.', '部門が見つかりません。', '부서를 찾을 수 없습니다.'],

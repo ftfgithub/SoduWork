@@ -13,6 +13,7 @@ log = logging.getLogger("uvicorn.error")
 _NL = chr(10)          # Join prompt lists with a literal newline to avoid fragile escaped source edits.
 
 from .. import models
+from ..pagination import Page, list_result, select_rows
 from ..realtime import hub
 from ..schemas import task_to_api
 from .task_parse_contract import _PARSE_SYSTEM, _apply_scene, _extract_json, _sanitize_parsed, _language_prompt
@@ -359,7 +360,7 @@ async def task_to_api_live(session: AsyncSession, task) -> dict:
 
 
 async def list_tasks(session: AsyncSession, owner_id: str,
-                     *, include_related: bool = False) -> list[dict]:
+                     *, include_related: bool = False, page: Page | None = None):
     """Executors list local tasks; employees also see tasks they participate in. Automation tasks
     appear in automation history and task details, outside the ordinary requirement pool. Hub
     retains them for single-task APIs and execution receipts."""
@@ -378,12 +379,8 @@ async def list_tasks(session: AsyncSession, owner_id: str,
         from . import task_requirements
         condition = await task_requirements.visible_clause(session, client)
         condition = condition & ~automation
-    res = await session.execute(
-        select(models.Task)
-        .where(condition)
-        .order_by(models.Task.created_at.desc())
-    )
-    rows = list(res.scalars().all())
+    query = select(models.Task).where(condition).order_by(models.Task.created_at.desc(), models.Task.id)
+    rows, total = await select_rows(session, query, page)
     out = [task_to_api(t) for t in rows]
     # Include AI state so cards identify automated work and its progress.
     ai = await ai_states(session, [t["id"] for t in out])
@@ -397,7 +394,7 @@ async def list_tasks(session: AsyncSession, owner_id: str,
         out = await task_access.decorate_many(session, rows, out, client)
         from . import task_requirements
         out = await task_requirements.decorate_many(session, client, rows, out)
-    return out
+    return list_result(out, total)
 
 
 async def get_task(session: AsyncSession, owner_id: str, tid: str,

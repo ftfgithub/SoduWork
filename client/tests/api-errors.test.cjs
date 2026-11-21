@@ -6,13 +6,18 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'api.js'), 'utf8');
 
-function load(fetchImpl, seed = {}, internal = false) {
+function load(fetchImpl, seed = {}, internal = false, locale) {
   const values = new Map(Object.entries(seed));
   const localStorage = {
     getItem: (key) => values.has(key) ? values.get(key) : null,
     setItem: (key, value) => values.set(key, String(value)),
   };
   const window = { __SODUWORK_TEST_HUB_CONFIG__: { allowSwitch: internal } };
+  if (locale) {
+    const catalog = require('../core/locales/' + locale + '-runtime-surfaces.js');
+    window.SoduWorkLocaleMessages = { [locale]: catalog };
+    window.SoduWorkI18n = { getLocale: () => locale, t: (key) => catalog[key] };
+  }
   const context = {
     window, localStorage, fetch: fetchImpl, User: { id: 'u-test' },
     navigator: { platform: 'test' }, console: { log() {}, error() {} },
@@ -187,4 +192,22 @@ test('定时任务断网向页面交付错误，不伪装成空清单', async ()
   const api = load(async () => { throw new TypeError('schedule network down'); });
   await assert.rejects(() => api.listSchedules(), /schedule network down/);
   assert.equal(api.online, false);
+});
+
+test('localized task errors retain the Hub status, code and original diagnostic', async () => {
+  for (const locale of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR']) {
+    for (const [key, send] of [
+      ['hub.input.inbox', api => api.createTeamTask({ title: 'fixture' })],
+      ['hub.input.comment_length', api => api.addTaskComment('fixture', 'text', [])],
+    ]) {
+      const api = load(async () => ({
+        ...response(400, JSON.stringify({ detail: 'raw diagnostic' })),
+        headers: new Headers({ 'X-Error-Code': key }),
+      }), {}, false, locale);
+      const expected = require('../core/locales/' + locale + '-runtime-surfaces.js')[key];
+      assert.ok(expected);
+      await assert.rejects(send(api), error => error.message === expected &&
+        error.status === 400 && error.code === key && error.detail === 'raw diagnostic');
+    }
+  }
 });
