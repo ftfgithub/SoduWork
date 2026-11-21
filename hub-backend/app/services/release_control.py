@@ -530,9 +530,10 @@ async def can_decide(session: AsyncSession, task: models.Task, request: am.Appro
 
 async def decide(session: AsyncSession, task: models.Task, actor, *, action: str,
                  decision: str, note: str = "", artifact_version_id: str = "",
-                 environment_id: str = "") -> dict:
+                 environment_id: str = "", commit: bool = True) -> dict:
     """Decide on the current version. Rejection takes effect immediately; approval requires the
-    configured countersignature count.
+    configured countersignature count. The approval inbox defers the deploy vote's commit
+    so the final vote and its deployment runs are written in one transaction.
     """
     decision = str(decision or "").lower()
     if decision not in ("approve", "reject"):
@@ -598,7 +599,7 @@ async def decide(session: AsyncSession, task: models.Task, actor, *, action: str
     if decision == "reject":
         req.status = "rejected"
         req.resolved_at = _now()
-        if action in ("baseline", "review", "uat"):
+        if action in ("baseline", "review"):
             artifact.state = "rejected"
         task_events.record(session, task.id, "release.rejected",
                            {"requestId": req.id, "versionId": artifact.id,
@@ -637,7 +638,10 @@ async def decide(session: AsyncSession, task: models.Task, actor, *, action: str
             task_events.record(session, task.id, "release.approved",
                                {"requestId": req.id, "versionId": artifact.id,
                                 "action": action, "note": d.note}, actor=d.user_name)
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     delivery = None
     if continue_existing_merge:
         from . import code_delivery

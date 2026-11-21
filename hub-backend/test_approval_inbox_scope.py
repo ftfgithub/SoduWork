@@ -12,13 +12,15 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import httpx
 from fastapi import FastAPI, Request
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import automation_models as am, models
 from app.api import approvals
 from app.db import Base, get_session
 from app.deps import current_client
+from app.services import deployments
 
 
 class ApprovalInboxScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -86,6 +88,104 @@ class ApprovalInboxScopeTests(unittest.IsolatedAsyncioTestCase):
         response = await self.http.get("/api/v1/approvals" + query, headers={"X-Test-Identity": who})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    async def seed_environment_gate(self, action, *, assignees=("alice",)):
+        request_id, task_id = await self.seed(action, assignees=assignees, required=len(assignees))
+        async with self.sessions() as session:
+            task = await session.get(models.Task, task_id)
+            task.repo_id = "repo"
+            session.add(models.Repo(id="repo", project_id="project", name="Release fixture"))
+            artifact = await session.get(am.ArtifactVersion, "artifact-" + action)
+            artifact.kind, artifact.state, artifact.commit_sha = "code", "tested", "abc123"
+            request = await session.get(am.ApprovalRequest, request_id)
+            request.action, request.environment_id = action, "trial"
+            session.add(am.Environment(id="trial", key="trial", name="Trial",
+                promotion_policy={"requiresApproval": True, "requiresAcceptance": True}))
+            session.add(am.DeploymentTarget(id="target", repo_id="repo", environment_id="trial",
+                                            name="Trial target"))
+            await session.commit()
+        return f"/api/v1/approvals/{request_id}/decision"
+
+    async def test_failed_deploy_authorization_keeps_prior_vote_and_can_retry(self):
+        url = await self.seed_environment_gate("deploy", assignees=("alice", "bob"))
+        vote = {"decision": "approve"}
+        first = await self.http.post(url, json=vote)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()["execution"]["pendingApproval"])
+        self.assertEqual(first.json()["execution"]["runs"], [])
+        async with self.sessions() as session:
+            await session.delete(await session.get(am.DeploymentTarget, "target"))
+            await session.commit()
+        bob = {"X-Test-Identity": "bob"}
+        failed = await self.http.post(url, headers=bob, json=vote)
+        self.assertEqual(failed.status_code, 409, failed.text)
+        self.assertIn("部署目标", failed.json()["detail"])
+        async with self.sessions() as session:
+            request = await session.get(am.ApprovalRequest, "request-deploy")
+            self.assertEqual(request.status, "pending")
+            self.assertIsNone(request.resolved_at)
+            voters = (await session.scalars(select(am.ApprovalDecision.user_id))).all()
+            self.assertEqual(voters, ["alice"])
+            self.assertIsNone(await session.scalar(select(am.DeploymentRun.id)))
+            self.assertIsNone(await session.scalar(select(models.TaskEvent.id).where(
+                models.TaskEvent.kind == "release.approved")))
+            session.add(am.DeploymentTarget(id="target", repo_id="repo", environment_id="trial",
+                                            name="Trial target"))
+            await session.commit()
+        retried = await self.http.post(url, headers=bob, json=vote)
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json()["request"]["status"], "approved")
+        self.assertEqual(len(retried.json()["execution"]["runs"]), 1)
+        duplicate = await self.http.post(url, headers=bob, json=vote)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        async with self.sessions() as session:
+            self.assertEqual((await session.scalars(select(am.DeploymentRun.target_id))).all(), ["target"])
+            voters = (await session.scalars(select(am.ApprovalDecision.user_id))).all()
+            self.assertCountEqual(voters, ["alice", "bob"])
+
+    async def test_deploy_queue_insert_failure_does_not_commit_the_final_vote(self):
+        url = await self.seed_environment_gate("deploy")
+        async with self.sessions() as session:
+            await session.execute(text("""
+                CREATE TRIGGER reject_run BEFORE INSERT ON automation_deployment_run
+                BEGIN SELECT RAISE(ABORT, 'queue insert failed'); END
+            """))
+            await session.commit()
+        with self.assertRaisesRegex(IntegrityError, "queue insert failed"):
+            await self.http.post(url, json={"decision": "approve"})
+        async with self.sessions() as session:
+            request = await session.get(am.ApprovalRequest, "request-deploy")
+            self.assertEqual(request.status, "pending")
+            self.assertIsNone(await session.scalar(select(am.ApprovalDecision.id)))
+            self.assertIsNone(await session.scalar(select(am.DeploymentRun.id)))
+
+    async def test_uat_rejection_only_changes_environment_acceptance(self):
+        url = await self.seed_environment_gate("uat")
+        async with self.sessions() as session:
+            session.add(am.DeploymentRun(task_id="task-uat", artifact_version_id="artifact-uat",
+                environment_id="trial", target_id="target", state="succeeded", idempotency_key="trial-run"))
+            await session.commit()
+        response = await self.http.post(url, json={"decision": "reject", "note": "Missing receipt"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["request"]["status"], "rejected")
+        async with self.sessions() as session:
+            artifact = await session.get(am.ArtifactVersion, "artifact-uat")
+            self.assertEqual(artifact.state, "tested")
+            sandbox = am.Environment(id="sandbox", key="sandbox", name="Sandbox",
+                                     promotion_policy={"requires": ["trial"]})
+            session.add(sandbox)
+            session.add(am.DeploymentTarget(id="sandbox-target", repo_id="repo",
+                                            environment_id="sandbox", name="Sandbox target"))
+            await session.commit()
+            task = await session.get(models.Task, artifact.task_id)
+            blocked = await deployments.request_environment(session, task, "sandbox")
+            self.assertTrue(blocked["blocked"], blocked)
+            self.assertIn("Trial", blocked["error"])
+            sandbox.promotion_policy = {"requires": []}
+            await session.commit()
+            result = await deployments.request_environment(session, task, "sandbox")
+            self.assertTrue(result["ok"], result)
+            self.assertEqual([run["artifactVersionId"] for run in result["runs"]], [artifact.id])
 
     async def test_cosigner_completed_decision_is_not_pending_again(self):
         request_id, task_id = await self.seed("cosign", assignees=("alice", "bob"), required=2)

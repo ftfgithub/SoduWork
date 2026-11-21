@@ -414,10 +414,11 @@ async def decide(request_id: str, body: dict = Body(default_factory=dict),
         session, task, request.id, note,
         body.get("reworkAttachmentIds") if decision == "reject" else [],
     )
+    deploy_vote = decision == "approve" and request.action == "deploy"
     out = await release_control.decide(
         session, task, user, action=request.action, decision=decision, note=rework_note,
         artifact_version_id=request.artifact_version_id,
-        environment_id=request.environment_id,
+        environment_id=request.environment_id, commit=not deploy_vote,
     )
     if not out.get("ok"):
         raise _decision_error(out)
@@ -443,9 +444,17 @@ async def decide(request_id: str, body: dict = Body(default_factory=dict),
     # Direct AI tasks and plugin nodes share the idempotent rework service.
     if decision == "approve" and request.action == "merge":
         execution = await code_delivery.merge_approved(session, task, who=who)
-    elif decision == "approve" and request.action == "deploy":
-        execution = await deployments.request_environment(
-            session, task, request.environment_id, who)
+    elif deploy_vote:
+        if out["request"]["status"] == "pending":
+            await session.commit()
+            execution = {"ok": True, "pendingApproval": True, "request": out["request"], "runs": []}
+        else:
+            # The final vote and its queued runs share the task lock and commit.
+            execution = await deployments.request_environment(
+                session, task, request.environment_id, who)
+            if not execution["ok"]:
+                await session.rollback()
+                raise HTTPException(status_code=409, detail=execution["error"])
     elif decision == "approve" and request.action == "uat":
         execution = await deployments.continue_after_acceptance(
             session, task, request.environment_id, who)
