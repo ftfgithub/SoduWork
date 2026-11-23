@@ -43,6 +43,7 @@ class ScheduleRouterDomainTests(unittest.IsolatedAsyncioTestCase):
                 models.OrgUnit(id="outside", name="Outside"),
                 models.Role(id="operator", name="Operator", permissions=["task.dispatch"]),
                 models.Role(id="reader", name="Reader", permissions=["task.view"]),
+                models.User(id="platform", username="platform", is_super=True, is_active=True),
                 models.User(id="manager", username="manager", org_id="team", role_id="operator", is_active=True),
                 models.User(id="reader", username="reader", org_id="team", role_id="reader", is_active=True),
                 models.Client(id="device", user_ref="manager", auth_state="active"),
@@ -112,6 +113,28 @@ class ScheduleRouterDomainTests(unittest.IsolatedAsyncioTestCase):
                 denied = await self.request(method, path, who="reader")
                 self.assertEqual(anonymous.status_code, 401, anonymous.text)
                 self.assertEqual(denied.status_code, 403, denied.text)
+
+    async def test_only_platform_admins_can_update_the_shared_template_catalog(self):
+        path = "/automation-templates"
+        current = await self.request("GET", path, who="platform")
+        self.assertEqual(current.status_code, 200, current.text)
+        saved = await self.request("PUT", path, who="platform", json={
+            "revision": current.json()["revision"],
+            "items": [{"id": "weekly", "name": "Weekly summary"}],
+        })
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["items"][0]["id"], "weekly")
+
+        with patch("app.services.automation_templates.save", new_callable=AsyncMock) as save:
+            for revision in (None, "stale-revision", saved.json()["revision"]):
+                body = {"revision": revision, "items": None}
+                with self.subTest(body=body):
+                    denied = await self.request("PUT", path, who="manager", json=body)
+                    self.assertEqual(denied.status_code, 403, denied.text)
+            save.assert_not_awaited()
+        visible = await self.request("GET", path, who="manager")
+        self.assertEqual(visible.status_code, 200, visible.text)
+        self.assertEqual(visible.json(), saved.json())
 
     async def test_admin_scope_and_legacy_patch_surface(self):
         result = await self.request("GET", "/ai-schedules")

@@ -42,10 +42,16 @@ async def list_automation_templates(
     return {"items": items, "revision": template_catalog_revision.revision(raw)}
 
 
+async def _global_template_editor(user: User = Depends(require_perm("task.dispatch"))) -> User:
+    if not user.is_super:
+        raise HTTPException(status_code=403, detail="仅平台管理员可修改全公司的自动化模板")
+    return user
+
+
 @template_router.put("/automation-templates")
 async def save_automation_templates(
     body: dict = Body(default_factory=dict),
-    user: User = Depends(require_perm("task.dispatch")),
+    user: User = Depends(_global_template_editor),
     session: AsyncSession = Depends(get_session),
 ):
     from ..services import automation_templates
